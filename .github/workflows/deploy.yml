@@ -53,7 +53,7 @@ jobs:
             TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
             BOT_USERNAME=cubalizator_bot
             TELEGRAM_WEBHOOK_SECRET=${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
-            WEBHOOK_PATH_SECRET=${{ secrets.WEBHOOK_PATH_SECRET }}
+            WEBHOOK_PATH_SECRET=cubalizator-hook-v1
             ALLOWED_CHAT_ID=${{ secrets.ALLOWED_CHAT_ID }}
             ALLOW_REPLY_TO_BOT=false
             GIGACHAT_AUTH_KEY=${{ secrets.GIGACHAT_AUTH_KEY }}
@@ -67,7 +67,7 @@ jobs:
       - name: Set Telegram webhook
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          WEBHOOK_PATH_SECRET: ${{ secrets.WEBHOOK_PATH_SECRET }}
+          WEBHOOK_PATH_SECRET: cubalizator-hook-v1
           TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
           CONTAINER_ID: ${{ steps.deploy.outputs.id }}
         run: |
