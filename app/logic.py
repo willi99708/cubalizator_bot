@@ -37,11 +37,25 @@ def should_answer(
     bot_username: str,
     bot_id: int | None,
     allow_reply_to_bot: bool,
+    is_private: bool = False,
 ) -> bool:
+    # В личке отвечаем на всё — там тег не нужен.
+    if is_private:
+        return True
     text = message_text(message)
     return is_mentioned(text, bot_username) or (
         allow_reply_to_bot and replied_to_bot(message, bot_id)
     )
+
+
+def extract_question(message: dict[str, Any], bot_username: str) -> str:
+    """Чистый текст вопроса пользователя (без тега бота) + процитированный текст,
+    если он есть. Используется для поиска по истории группы."""
+    question = strip_mention(message_text(message), bot_username)
+    reply = message.get("reply_to_message") or {}
+    quote = message.get("quote") or {}
+    quoted = str(quote.get("text") or "").strip() or message_text(reply)
+    return " ".join(p for p in (question, quoted) if p).strip()
 
 
 def build_model_input(message: dict[str, Any], bot_username: str) -> str:

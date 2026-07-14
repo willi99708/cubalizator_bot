@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from . import history
 from .clients import GigaChatClient, TelegramClient
 from .config import Settings
-from .logic import build_model_input, message_text, should_answer, truncate_answer
+from .logic import (
+    build_model_input,
+    extract_question,
+    message_text,
+    should_answer,
+    truncate_answer,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,6 +33,9 @@ try:
     bot_id: int | None = int(settings.telegram_bot_token.split(":", 1)[0])
 except (ValueError, IndexError):
     bot_id = None
+
+if settings.chat_history_path:
+    os.environ.setdefault("CHAT_HISTORY_PATH", settings.chat_history_path)
 
 app = FastAPI(title="CubaLizator Bot")
 
@@ -112,11 +123,25 @@ async def telegram_webhook(
             bot_username=settings.bot_username,
             bot_id=bot_id,
             allow_reply_to_bot=settings.allow_reply_to_bot,
+            is_private=chat.get("type") == "private",
         ):
             logger.info("Ignored message without mention/reply")
             return JSONResponse({"ok": True})
 
         model_input = build_model_input(message, settings.bot_username)
+
+        question = extract_question(message, settings.bot_username)
+        history_ctx = history.build_context(question)
+        if history_ctx == "__HISTORY_UNAVAILABLE__":
+            model_input = (
+                "История группы сейчас недоступна.\n\n" + model_input
+            )
+        elif history_ctx:
+            model_input = (
+                f"Фрагменты переписки (используй их как источник):\n\n"
+                f"{history_ctx}\n\n---\n\n{model_input}"
+            )
+            logger.info("History context attached for question=%r", question[:120])
 
         await telegram.send_chat_action(chat_id)
         answer = await gigachat.ask(model_input)
