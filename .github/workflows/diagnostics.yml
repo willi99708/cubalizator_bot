@@ -1,0 +1,156 @@
+name: diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostics:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Check Telegram bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          RESPONSE="$(curl --silent --show-error \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe")"
+          echo "$RESPONSE" | jq '{
+            ok: .ok,
+            bot_id: .result.id,
+            username: .result.username,
+            can_join_groups: .result.can_join_groups,
+            can_read_all_group_messages: .result.can_read_all_group_messages
+          }'
+          test "$(echo "$RESPONSE" | jq -r '.ok')" = "true"
+
+      - name: 2. Check Telegram webhook
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          RESPONSE="$(curl --silent --show-error \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo")"
+          echo "$RESPONSE" | jq
+          test "$(echo "$RESPONSE" | jq -r '.ok')" = "true"
+
+      - name: 3. Check Telegram outbound message
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.ALLOWED_CHAT_ID }}
+        run: |
+          set -euo pipefail
+          RESPONSE="$(curl --silent --show-error \
+            --request POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=Диагностика: Telegram API и отправка сообщений работают.")"
+          echo "$RESPONSE" | jq '{ok: .ok, description: .description, chat_id: .result.chat.id, message_id: .result.message_id}'
+          test "$(echo "$RESPONSE" | jq -r '.ok')" = "true"
+
+      - name: 4. Check Yandex container health
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error \
+            --max-time 30 \
+            "https://bba1vtooqk4h55qfm86p.containers.yandexcloud.net/health"
+          echo
+
+      - name: 5. Send synthetic update directly to webhook
+        env:
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          CHAT_ID: ${{ secrets.ALLOWED_CHAT_ID }}
+        run: |
+          set -euo pipefail
+          NOW="$(date +%s)"
+          BODY="$(jq -n \
+            --argjson chat_id "$CHAT_ID" \
+            --argjson date "$NOW" \
+            '{
+              update_id: 999999001,
+              message: {
+                message_id: 999999001,
+                date: $date,
+                text: "/chatid",
+                from: {
+                  id: 999999001,
+                  is_bot: false,
+                  first_name: "GitHub diagnostics"
+                },
+                chat: {
+                  id: $chat_id,
+                  type: "group",
+                  title: "Diagnostics"
+                }
+              }
+            }')"
+
+          curl --fail-with-body --silent --show-error \
+            --max-time 30 \
+            --request POST \
+            "https://bba1vtooqk4h55qfm86p.containers.yandexcloud.net/telegram/webhook/cubalizator-hook-v1" \
+            --header "Content-Type: application/json" \
+            --header "X-Telegram-Bot-Api-Secret-Token: ${TELEGRAM_WEBHOOK_SECRET}" \
+            --data "$BODY"
+          echo
+
+      - name: 6. Check GigaChat OAuth and generation
+        env:
+          GIGACHAT_AUTH_KEY: ${{ secrets.GIGACHAT_AUTH_KEY }}
+        run: |
+          set -euo pipefail
+
+          RQUID="$(python - <<'PY'
+          import uuid
+          print(uuid.uuid4())
+          PY
+          )"
+
+          OAUTH_RESPONSE="$(curl --insecure --silent --show-error \
+            --max-time 30 \
+            --request POST \
+            "https://ngw.devices.sberbank.ru:9443/api/v2/oauth" \
+            --header "Authorization: Basic ${GIGACHAT_AUTH_KEY}" \
+            --header "RqUID: ${RQUID}" \
+            --header "Accept: application/json" \
+            --header "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "scope=GIGACHAT_API_PERS")"
+
+          ACCESS_TOKEN="$(echo "$OAUTH_RESPONSE" | jq -r '.access_token // empty')"
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "GigaChat OAuth failed:"
+            echo "$OAUTH_RESPONSE" | jq
+            exit 1
+          fi
+          echo "GigaChat OAuth: OK"
+
+          CHAT_RESPONSE="$(curl --insecure --silent --show-error \
+            --max-time 45 \
+            --request POST \
+            "https://gigachat.devices.sberbank.ru/api/v1/chat/completions" \
+            --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+            --header "Accept: application/json" \
+            --header "Content-Type: application/json" \
+            --data '{
+              "model": "GigaChat-2",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "Ответь одним словом: столица России?"
+                }
+              ],
+              "temperature": 0.1,
+              "max_tokens": 30,
+              "stream": false
+            }')"
+
+          ANSWER="$(echo "$CHAT_RESPONSE" | jq -r '.choices[0].message.content // empty')"
+          if [ -z "$ANSWER" ]; then
+            echo "GigaChat generation failed:"
+            echo "$CHAT_RESPONSE" | jq
+            exit 1
+          fi
+          echo "GigaChat answer: $ANSWER"
