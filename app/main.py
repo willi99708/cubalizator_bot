@@ -8,7 +8,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from . import history
+from . import analysis, history
 from .clients import GigaChatClient, TelegramClient
 from .config import Settings
 from .logic import (
@@ -128,20 +128,22 @@ async def telegram_webhook(
             logger.info("Ignored message without mention/reply")
             return JSONResponse({"ok": True})
 
-        model_input = build_model_input(message, settings.bot_username)
-
         question = extract_question(message, settings.bot_username)
-        history_ctx = history.build_context(question)
-        if history_ctx == "__HISTORY_UNAVAILABLE__":
-            model_input = (
-                "История группы сейчас недоступна.\n\n" + model_input
-            )
-        elif history_ctx:
-            model_input = (
-                f"Фрагменты переписки (используй их как источник):\n\n"
-                f"{history_ctx}\n\n---\n\n{model_input}"
-            )
-            logger.info("History context attached for question=%r", question[:120])
+
+        # Вопросы про историю группы идут через оркестратор:
+        # GigaChat планирует поиск -> локально собираем эпизоды -> GigaChat отвечает.
+        # Дешёвый локальный пре-фильтр отсекает явно не-исторические вопросы,
+        # чтобы не гонять планировщик на «что лучше BMW или Jetour».
+        if history.looks_like_history_question(question):
+            await telegram.send_chat_action(chat_id)
+            history_answer = await analysis.answer_history(question, gigachat)
+            if history_answer:
+                await telegram.send_reply(
+                    chat_id, message_id, truncate_answer(history_answer, settings.max_answer_chars)
+                )
+                return JSONResponse({"ok": True})
+
+        model_input = build_model_input(message, settings.bot_username)
 
         await telegram.send_chat_action(chat_id)
         answer = await gigachat.ask(model_input)

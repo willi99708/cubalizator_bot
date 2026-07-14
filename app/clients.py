@@ -90,16 +90,25 @@ class GigaChatClient:
         self._expires_at_ms = int(body["expires_at"])
         return self._access_token
 
-    async def ask(self, content: str) -> str:
+    async def complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        temperature: float = 0.2,
+        max_tokens: int = 512,
+    ) -> str:
+        """Низкоуровневый вызов: произвольные system+user -> текст ответа.
+        Используется и для обычных реплик (ask), и для планирования/анализа истории."""
         token = await self._get_access_token()
         payload = {
             "model": self.settings.gigachat_model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": content},
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
             ],
-            "temperature": 0.1,
-            "max_tokens": 220,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
             "repetition_penalty": 1.05,
             "stream": False,
         }
@@ -108,27 +117,26 @@ class GigaChatClient:
             verify=self._verify(),
             timeout=self.settings.gigachat_timeout_seconds,
         ) as client:
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
             response = await client.post(
-                self.settings.gigachat_chat_url,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-                json=payload,
+                self.settings.gigachat_chat_url, headers=headers, json=payload
             )
             if response.status_code == 401:
                 token = await self._get_access_token(force=True)
+                headers["Authorization"] = f"Bearer {token}"
                 response = await client.post(
-                    self.settings.gigachat_chat_url,
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                    },
-                    json=payload,
+                    self.settings.gigachat_chat_url, headers=headers, json=payload
                 )
             response.raise_for_status()
             body = response.json()
 
         return str(body["choices"][0]["message"]["content"]).strip()
+
+    async def ask(self, content: str) -> str:
+        return await self.complete(
+            SYSTEM_PROMPT, content, temperature=0.1, max_tokens=220
+        )

@@ -1,0 +1,148 @@
+{
+  "people": {
+    "Daniil": {
+      "aliases": [
+        "Даня",
+        "Даниил",
+        "Молдаванин"
+      ],
+      "description": ""
+    },
+    "Никита": {
+      "aliases": [
+        "Некит"
+      ],
+      "description": ""
+    },
+    "Ваня Авоськин": {
+      "aliases": [
+        "Ваня",
+        "Авоськин",
+        "Берёза",
+        "Береза",
+        "Мел"
+      ],
+      "description": ""
+    },
+    "Дон Биткоин": {
+      "aliases": [
+        "Бен",
+        "Вениамин",
+        "Симанков"
+      ],
+      "description": ""
+    },
+    "Gorshok": {
+      "aliases": [
+        "Горшок",
+        "Илюха",
+        "Илья",
+        "Дрочер"
+      ],
+      "description": ""
+    },
+    "Рома": {
+      "aliases": [
+        "Роман",
+        "Пользователь Пользователь"
+      ],
+      "description": ""
+    }
+  },
+  "aliases": [
+    {
+      "alias": "Даня",
+      "person": "Daniil",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Даниил",
+      "person": "Daniil",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Молдаванин",
+      "person": "Daniil",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Некит",
+      "person": "Никита",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Ваня",
+      "person": "Ваня Авоськин",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Авоськин",
+      "person": "Ваня Авоськин",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Берёза",
+      "person": "Ваня Авоськин",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Береза",
+      "person": "Ваня Авоськин",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Мел",
+      "person": "Ваня Авоськин",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Бен",
+      "person": "Дон Биткоин",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Вениамин",
+      "person": "Дон Биткоин",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Симанков",
+      "person": "Дон Биткоин",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Горшок",
+      "person": "Gorshok",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Илюха",
+      "person": "Gorshok",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Илья",
+      "person": "Gorshok",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Дрочер",
+      "person": "Gorshok",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Роман",
+      "person": "Рома",
+      "confidence": "подтверждено"
+    },
+    {
+      "alias": "Пользователь Пользователь",
+      "person": "Рома",
+      "confidence": "подтверждено"
+    }
+  ],
+  "events": [],
+  "inside_jokes": [],
+  "relationships": [],
+  "_note": "events/inside_jokes/relationships заполняются через scripts/build_memory.py на GigaChat"
+}

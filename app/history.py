@@ -169,6 +169,17 @@ class _Index:
         self.avgdl = (sum(self.doc_len) / len(self.doc_len)) if self.doc_len else 0.0
         self.N = len(self.records)
 
+        # карты для reply-цепочек и соседей (используются retrieval.py)
+        self.id_to_idx: dict[int, int] = {}
+        self.children: dict[int, list[int]] = {}
+        for i, rec in enumerate(self.records):
+            mid = rec.get("id")
+            if mid is not None:
+                self.id_to_idx[mid] = i
+            parent = rec.get("reply_to")
+            if parent is not None:
+                self.children.setdefault(parent, []).append(i)
+
     def bm25(
         self,
         query_tokens: list[str],
@@ -216,6 +227,7 @@ def _load_index() -> _Index | None:
                 "date": (m.get("date") or "")[:10],
                 "ts": int(m.get("ts") or 0),
                 "text": text,
+                "reply_to": m.get("reply_to"),
             }
         )
     logger.info("История загружена: %s сообщений из %s", len(records), path)
@@ -228,13 +240,30 @@ def history_available() -> bool:
 
 # --- публичный поиск ---------------------------------------------------------
 
-def search(query: str, limit: int = 8, min_score: float = 1.0) -> list[dict[str, Any]]:
+def get_index() -> "_Index | None":
+    return _load_index()
+
+
+def search_indices(
+    query: str,
+    limit: int = 8,
+    min_score: float = 1.0,
+    *,
+    extra_terms: list[str] | None = None,
+    person: str | None = None,
+    date_range: tuple[int, int] | None = None,
+) -> list[int]:
+    """Возвращает позиции релевантных сообщений. Локальный поисковый слой:
+    фильтр по автору/дате + BM25 + буст сумм. Никаких выводов — только кандидаты.
+    extra_terms/person/date_range позволяют оркестратору расширять запрос."""
     index = _load_index()
     if index is None:
         return []
 
-    person = aliases.resolve_query_person(query)
-    date_range = parse_date_filter(query)
+    if person is None:
+        person = aliases.resolve_query_person(query)
+    if date_range is None:
+        date_range = parse_date_filter(query)
 
     candidates: set[int] | None = None
     if person is not None:
@@ -248,21 +277,29 @@ def search(query: str, limit: int = 8, min_score: float = 1.0) -> list[dict[str,
         t for t in tokenize(query)
         if t not in _PERSON_STOP and t not in _STOPWORDS
     ]
+    for term in extra_terms or []:
+        q_tokens.extend(t for t in tokenize(term) if t not in _STOPWORDS)
     scores = index.bm25(q_tokens, candidates=candidates)
 
-    # для денежных вопросов поднимаем сообщения, где реально есть сумма
     if any(w in normalize(query) for w in _MONEY_MARKERS):
         for doc_idx in list(scores):
             if extract_amounts(index.records[doc_idx]["text"]):
                 scores[doc_idx] += 3.0
 
-    # если по тексту ничего, но человек+период заданы — вернём его сообщения периода
     if not scores and candidates:
         ranked = sorted(candidates, key=lambda i: index.records[i]["ts"], reverse=True)
-        return [index.records[i] for i in ranked[:limit]]
+        return ranked[:limit]
 
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-    return [index.records[i] for i, s in ranked if s >= min_score][:limit]
+    return [i for i, s in ranked if s >= min_score][:limit]
+
+
+def search(query: str, limit: int = 8, min_score: float = 1.0) -> list[dict[str, Any]]:
+    index = _load_index()
+    if index is None:
+        return []
+    idxs = search_indices(query, limit=limit, min_score=min_score)
+    return [index.records[i] for i in idxs]
 
 
 # частые слова-связки, которые только зашумляют ранжирование запроса
