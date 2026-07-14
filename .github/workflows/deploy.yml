@@ -35,7 +35,7 @@ jobs:
           docker push "$IMAGE"
 
       - name: Deploy Yandex Serverless Container
-        id: deploy
+        id: deploy_container
         uses: yc-actions/yc-sls-container-deploy@v4
         with:
           yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
@@ -67,8 +67,9 @@ jobs:
 
       - name: Check container health
         env:
-          CONTAINER_ID: ${{ steps.deploy.outputs.id }}
+          CONTAINER_ID: ${{ steps.deploy_container.outputs.id }}
         run: |
+          set -euo pipefail
           for attempt in 1 2 3 4 5; do
             if curl --fail-with-body --silent --show-error \
               --max-time 30 \
@@ -80,10 +81,41 @@ jobs:
           done
           exit 1
 
-      - name: Reset and set Telegram webhook
+      - name: Generate API Gateway specification
+        env:
+          CONTAINER_ID: ${{ steps.deploy_container.outputs.id }}
+        run: |
+          cat > apigw.generated.yaml <<EOF
+          openapi: "3.0.0"
+          info:
+            title: CubaLizator Telegram Gateway
+            version: "1.0.0"
+          paths:
+            /telegram/webhook/cubalizator-hook-v1:
+              post:
+                operationId: telegramWebhook
+                x-yc-apigateway-integration:
+                  type: serverless_containers
+                  container_id: ${CONTAINER_ID}
+                responses:
+                  "200":
+                    description: Telegram update accepted
+          EOF
+          cat apigw.generated.yaml
+
+      - name: Deploy API Gateway
+        id: deploy_gateway
+        uses: yc-actions/yc-api-gateway-deploy@v2
+        with:
+          yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+          gateway-name: cubalizator-gateway
+          folder-id: ${{ secrets.YC_FOLDER_ID }}
+          spec-file: apigw.generated.yaml
+
+      - name: Set Telegram webhook to API Gateway
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CONTAINER_ID: ${{ steps.deploy.outputs.id }}
+          GATEWAY_DOMAIN: ${{ steps.deploy_gateway.outputs.domain }}
         run: |
           set -euo pipefail
 
@@ -95,7 +127,7 @@ jobs:
           RESPONSE="$(curl --fail --silent --show-error \
             --request POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-            --data-urlencode "url=https://${CONTAINER_ID}.containers.yandexcloud.net/telegram/webhook/cubalizator-hook-v1" \
+            --data-urlencode "url=https://${GATEWAY_DOMAIN}/telegram/webhook/cubalizator-hook-v1" \
             --data-urlencode 'allowed_updates=["message","edited_message"]' \
             --data-urlencode "drop_pending_updates=true")"
 
@@ -105,7 +137,7 @@ jobs:
       - name: Verify Telegram webhook
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CONTAINER_ID: ${{ steps.deploy.outputs.id }}
+          GATEWAY_DOMAIN: ${{ steps.deploy_gateway.outputs.domain }}
         run: |
           set -euo pipefail
 
@@ -114,7 +146,7 @@ jobs:
 
           echo "$RESPONSE" | jq
 
-          EXPECTED="https://${CONTAINER_ID}.containers.yandexcloud.net/telegram/webhook/cubalizator-hook-v1"
+          EXPECTED="https://${GATEWAY_DOMAIN}/telegram/webhook/cubalizator-hook-v1"
           ACTUAL="$(echo "$RESPONSE" | jq -r '.result.url')"
 
           test "$ACTUAL" = "$EXPECTED"
