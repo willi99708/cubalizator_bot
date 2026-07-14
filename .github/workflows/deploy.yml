@@ -67,15 +67,15 @@ jobs:
       - name: Set Telegram webhook
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          WEBHOOK_PATH_SECRET: cubalizator-hook-v1
           TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
           CONTAINER_ID: ${{ steps.deploy.outputs.id }}
         run: |
           curl --fail --silent --show-error \
             --request POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-            --data-urlencode "url=https://${CONTAINER_ID}.containers.yandexcloud.net/telegram/webhook/${WEBHOOK_PATH_SECRET}" \
+            --data-urlencode "url=https://${CONTAINER_ID}.containers.yandexcloud.net/telegram/webhook/cubalizator-hook-v1" \
             --data-urlencode "secret_token=${TELEGRAM_WEBHOOK_SECRET}" \
+            --data-urlencode 'allowed_updates=["message"]' \
             --data-urlencode "drop_pending_updates=true"
       - name: Check Telegram webhook
         env:
