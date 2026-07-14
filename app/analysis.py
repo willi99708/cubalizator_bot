@@ -148,7 +148,9 @@ _VALID_MODES = {"CHAT_REQUIRED", "CHAT_PREFERRED", "GENERAL"}
 async def classify(question: str, llm: LLM) -> dict[str, Any]:
     try:
         raw = await llm.complete(
-            CLASSIFIER_SYSTEM, f"Вопрос: {question}", temperature=0.0, max_tokens=200
+            CLASSIFIER_SYSTEM, f"Вопрос: {question}",
+            model=getattr(llm, "analysis_model", None),
+            temperature=0.0, max_tokens=200,
         )
         data = _parse_json(raw)
     except Exception as exc:  # noqa: BLE001 — модель может отвалиться, деградируем мягко
@@ -238,7 +240,11 @@ async def analyze_once(
         ctx_parts.append(mem_text)
     ctx_parts.append(retrieval.format_episodes(episodes) or "(эпизодов не найдено)")
     user = f"Вопрос: {question}\n\nНайденные фрагменты:\n\n" + "\n\n".join(ctx_parts)
-    raw = await llm.complete(ANALYZER_SYSTEM, user, temperature=0.2, max_tokens=600)
+    raw = await llm.complete(
+        ANALYZER_SYSTEM, user,
+        model=getattr(llm, "analysis_model", None),
+        temperature=0.2, max_tokens=600,
+    )
     return _parse_json(raw)
 
 
@@ -313,21 +319,21 @@ async def route_answer(
     mode = cls.get("mode", "GENERAL")
     query = cls.get("chat_search_query") or question
 
-    # Подстраховка от слабого классификатора (Lite): если в вопросе есть известный
-    # участник группы или явные маркеры истории, не отдаём его в GENERAL —
-    # минимум проверяем переписку (CHAT_PREFERRED, с фолбэком в обычный ответ).
     from . import aliases
-    if mode == "GENERAL" and (
-        aliases.resolve_query_person(question) is not None
-        or history.looks_like_history_question(question)
-    ):
-        mode = "CHAT_PREFERRED"
-        logger.info("Router override: GENERAL -> CHAT_PREFERRED (известный алиас/маркер)")
+
+    if mode != "CHAT_REQUIRED":
+        # Точный перехват ошибок классификатора: известный участник группы или
+        # явный маркер истории («в чате», «по нашей переписке», «с кем»...).
+        # Незнакомые клички (Хриплая) локально не распознать — это задача модели.
+        if mode == "GENERAL" and (
+            aliases.resolve_query_person(question) is not None
+            or history.looks_like_history_question(question)
+        ):
+            mode = "CHAT_PREFERRED"
+        if mode == "GENERAL":
+            return None
 
     logger.info("Router mode=%s query=%r", mode, query[:120])
-
-    if mode == "GENERAL":
-        return None
 
     if not history.history_available():
         return NOT_FOUND if mode == "CHAT_REQUIRED" else None
@@ -336,7 +342,6 @@ async def route_answer(
     good = result["found"] and not _insufficient(result["confidence"])
 
     if mode == "CHAT_REQUIRED":
-        # неуверенный/пустой ответ в REQUIRED = «не нашёл», без фантазий модели
         return result["answer"] if good else NOT_FOUND
 
     # CHAT_PREFERRED: нет убедительных данных -> обычный вопрос (не «не нашёл»)

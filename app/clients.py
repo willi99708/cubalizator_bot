@@ -51,6 +51,7 @@ class TelegramClient:
 class GigaChatClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.analysis_model = settings.gigachat_analysis_model
         self._access_token: str | None = None
         self._expires_at_ms = 0
 
@@ -95,14 +96,15 @@ class GigaChatClient:
         system: str,
         user: str,
         *,
+        model: str | None = None,
         temperature: float = 0.2,
         max_tokens: int = 512,
     ) -> str:
         """Низкоуровневый вызов: произвольные system+user -> текст ответа.
-        Используется и для обычных реплик (ask), и для планирования/анализа истории."""
+        model=None -> основная модель; можно передать более сильную для анализа."""
         token = await self._get_access_token()
         payload = {
-            "model": self.settings.gigachat_model,
+            "model": model or self.settings.gigachat_model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},

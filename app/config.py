@@ -44,6 +44,7 @@ class Settings:
     gigachat_auth_key: str
     gigachat_scope: str
     gigachat_model: str
+    gigachat_analysis_model: str
     gigachat_oauth_url: str
     gigachat_chat_url: str
     gigachat_verify_ssl: bool
@@ -55,6 +56,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        base_model = _model("GIGACHAT_MODEL", "GigaChat")
         return cls(
             telegram_bot_token=_req("TELEGRAM_BOT_TOKEN"),
             bot_username=_clean("BOT_USERNAME", "cubalizator_bot").lstrip("@"),
@@ -63,7 +65,11 @@ class Settings:
             allow_reply_to_bot=_bool("ALLOW_REPLY_TO_BOT", False),
             gigachat_auth_key=_req("GIGACHAT_AUTH_KEY"),
             gigachat_scope=_clean("GIGACHAT_SCOPE", "GIGACHAT_API_PERS"),
-            gigachat_model=_model("GIGACHAT_MODEL", "GigaChat"),
+            gigachat_model=base_model,
+            # Модель для смыслового анализа истории. По умолчанию = основной.
+            # Можно поставить сильнее (GigaChat-2-Max) только для разбора переписки,
+            # оставив дешёвую модель на классификацию и обычные ответы.
+            gigachat_analysis_model=_clean("GIGACHAT_ANALYSIS_MODEL", base_model) or base_model,
             gigachat_oauth_url=_clean(
                 "GIGACHAT_OAUTH_URL",
                 "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
