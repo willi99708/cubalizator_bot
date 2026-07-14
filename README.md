@@ -1,21 +1,41 @@
-MIT License
+# cubalizator_bot
 
-Copyright (c) 2026
+Telegram-фактчекер на GigaChat. Отвечает при упоминании `@cubalizator_bot` в любом чате, куда добавлен; при упоминании в ответе на чужое сообщение передаёт цитату в GigaChat.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+## Локальная проверка
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest -q
+```
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Для локального webhook нужен публичный HTTPS URL. Основной вариант развёртывания — Yandex Cloud Serverless Containers.
+
+## Переменные окружения
+
+Скопируйте `.env.example` в `.env` только для локальной работы. `.env` не коммитить.
+
+`ALLOW_REPLY_TO_BOT=false` означает: бот отвечает только при `@упоминании`. Если поставить `true`, он также продолжит разговор при обычном ответе на сообщение самого бота.
+
+## Сборка Docker
+
+```bash
+docker build -t cubalizator:latest .
+```
+
+## Webhook
+
+После публикации контейнера задайте локально переменные `TELEGRAM_BOT_TOKEN`, `PUBLIC_URL`, `WEBHOOK_PATH_SECRET`, `TELEGRAM_WEBHOOK_SECRET`, затем выполните:
+
+```bash
+python scripts/set_webhook.py
+```
+
+URL будет таким:
+
+```text
+https://<public-container-url>/telegram/webhook/<WEBHOOK_PATH_SECRET>
+```

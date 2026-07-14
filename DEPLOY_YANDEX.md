@@ -45,7 +45,6 @@ TELEGRAM_BOT_TOKEN=<новый токен BotFather>
 BOT_USERNAME=cubalizator_bot
 TELEGRAM_WEBHOOK_SECRET=<случайный секрет>
 WEBHOOK_PATH_SECRET=<случайный секрет для URL>
-ALLOWED_CHAT_ID=
 ALLOW_REPLY_TO_BOT=false
 GIGACHAT_AUTH_KEY=<Authorization Key GigaChat>
 GIGACHAT_SCOPE=GIGACHAT_API_PERS
@@ -75,13 +74,6 @@ $env:TELEGRAM_WEBHOOK_SECRET="<тот же TELEGRAM_WEBHOOK_SECRET>"
 python scripts/set_webhook.py
 ```
 
-## Ограничение одной группой
-
-1. Добавить бота в группу.
-2. Написать `/chatid@cubalizator_bot`.
-3. Скопировать отрицательный ID.
-4. В редакторе контейнера задать `ALLOWED_CHAT_ID=<ID>`.
-5. Создать новую ревизию.
 
 ## BotFather
 
