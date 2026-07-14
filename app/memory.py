@@ -96,7 +96,10 @@ def format_memory(entries: list[dict[str, Any]]) -> str:
         return ""
     lines = ["Подсказки из структурированной памяти (требуют подтверждения сообщениями):"]
     for e in entries:
-        desc = e.get("description") or e.get("alias") or ""
+        if e.get("kind") == "aliases" and e.get("alias") and e.get("person"):
+            desc = f"«{e['alias']}» — это {e['person']}"
+        else:
+            desc = e.get("description") or e.get("alias") or ""
         conf = e.get("confidence", "")
         ev = e.get("evidence") or []
         ev_s = f" [сообщения: {', '.join('#'+str(x) for x in ev)}]" if ev else ""

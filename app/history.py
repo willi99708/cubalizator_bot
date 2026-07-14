@@ -61,7 +61,7 @@ _STEM_ENDINGS = (
 def _stem(token: str) -> str:
     if token in _SYNONYMS:
         return _SYNONYMS[token]
-    if len(token) <= 4:
+    if len(token) <= 3:
         return token
     for end in _STEM_ENDINGS:
         if token.endswith(end) and len(token) - len(end) >= 3:
@@ -247,21 +247,27 @@ def get_index() -> "_Index | None":
 def search_indices(
     query: str,
     limit: int = 8,
-    min_score: float = 1.0,
+    min_score: float = 0.3,
     *,
     extra_terms: list[str] | None = None,
     person: str | None = None,
     date_range: tuple[int, int] | None = None,
+    literal: bool = False,
 ) -> list[int]:
     """Возвращает позиции релевантных сообщений. Локальный поисковый слой:
     фильтр по автору/дате + BM25 + буст сумм. Никаких выводов — только кандидаты.
-    extra_terms/person/date_range позволяют оркестратору расширять запрос."""
+
+    literal=True: ищем сами слова запроса (включая клички) по ВСЕМ авторам, без
+    фильтра по автору и без выбрасывания алиасов из токенов. Нужно для вопросов
+    вида «кто такой Дрочер», где важно найти сообщения СО словом, а не сообщения
+    самого человека."""
     index = _load_index()
     if index is None:
         return []
 
-    if person is None:
-        person = aliases.resolve_query_person(query)
+    if not literal:
+        if person is None:
+            person = aliases.resolve_query_person(query)
     if date_range is None:
         date_range = parse_date_filter(query)
 
@@ -273,10 +279,8 @@ def search_indices(
         in_range = {i for i, r in enumerate(index.records) if start <= r["ts"] < end}
         candidates = in_range if candidates is None else (candidates & in_range)
 
-    q_tokens = [
-        t for t in tokenize(query)
-        if t not in _PERSON_STOP and t not in _STOPWORDS
-    ]
+    stop = _STOPWORDS if literal else (_STOPWORDS | _PERSON_STOP)
+    q_tokens = [t for t in tokenize(query) if t not in stop]
     for term in extra_terms or []:
         q_tokens.extend(t for t in tokenize(term) if t not in _STOPWORDS)
     scores = index.bm25(q_tokens, candidates=candidates)
@@ -294,7 +298,7 @@ def search_indices(
     return [i for i, s in ranked if s >= min_score][:limit]
 
 
-def search(query: str, limit: int = 8, min_score: float = 1.0) -> list[dict[str, Any]]:
+def search(query: str, limit: int = 8, min_score: float = 0.3) -> list[dict[str, Any]]:
     index = _load_index()
     if index is None:
         return []

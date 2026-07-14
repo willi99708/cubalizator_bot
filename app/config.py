@@ -26,7 +26,7 @@ def _req(name: str) -> str:
 def _model(name: str, default: str) -> str:
     """Читает имя модели, отсекая типовые ошибки настройки:
     пустое значение или случайно вписанное имя самой переменной
-    (например GIGACHAT_MODEL=GIGACHAT_MODEL) -> берём дефолт."""
+    (например GIGACHAT_MODEL=GIGACHAT_MODEL) -> берём дефолт (GigaChat Lite)."""
     value = (os.getenv(name) or "").strip()
     if not value or value.upper() == name.upper():
         return default
@@ -63,7 +63,7 @@ class Settings:
             allow_reply_to_bot=_bool("ALLOW_REPLY_TO_BOT", False),
             gigachat_auth_key=_req("GIGACHAT_AUTH_KEY"),
             gigachat_scope=_clean("GIGACHAT_SCOPE", "GIGACHAT_API_PERS"),
-            gigachat_model=_model("GIGACHAT_MODEL", "GigaChat-2-Max"),
+            gigachat_model=_model("GIGACHAT_MODEL", "GigaChat"),
             gigachat_oauth_url=_clean(
                 "GIGACHAT_OAUTH_URL",
                 "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",

@@ -7,8 +7,9 @@
     прозвищ, пересказ событий, финальная формулировка и оценка уверенности.
 
 Поток:
-  1) plan_search()  — GigaChat строит JSON-план поиска по вопросу.
-  2) _retrieve()    — локально достаём эпизоды по плану (+ подсказки из памяти).
+  1) classify()     — GigaChat определяет режим (CHAT_REQUIRED / CHAT_PREFERRED /
+                      GENERAL) и даёт строку поиска по истории.
+  2) _retrieve()    — локально достаём эпизоды по строке поиска (+ подсказки памяти).
   3) analyze()      — GigaChat анализирует эпизоды и либо отвечает, либо просит
                       второй поиск.
   4) при необходимости — второй/третий проход (не больше max_passes).
@@ -31,22 +32,37 @@ class LLM(Protocol):
 
 # --- промпты -----------------------------------------------------------------
 
-PLANNER_SYSTEM = """
-Ты — планировщик поиска по переписке закрытой Telegram-группы. Тебе дают вопрос
-пользователя. Верни СТРОГО JSON без пояснений и без markdown, с полями:
+CLASSIFIER_SYSTEM = """
+Ты — маршрутизатор вопросов бота закрытой Telegram-группы. Определи режим вопроса
+и верни СТРОГО JSON без markdown и пояснений:
 {
-  "is_history_question": true|false,   // относится ли вопрос к истории этой группы
-  "people": [],      // упомянутые люди и прозвища (как в вопросе)
-  "places": [],      // места
-  "events": [],      // события/темы
-  "spellings": [],   // возможные варианты написания имён/прозвищ/мест
-  "extra_queries": [],   // дополнительные поисковые формулировки
-  "need_reply_chains": true|false,   // важны ли ответы/цепочки
-  "need_neighbors": true|false       // важен ли соседний контекст
+  "mode": "CHAT_REQUIRED" | "CHAT_PREFERRED" | "GENERAL",
+  "chat_search_query": "строка для поиска по истории группы",
+  "fallback_to_general": true | false
 }
-Если вопрос общий (сравнить машины, мнение, факт из общих знаний) —
-is_history_question=false, остальные поля можно оставить пустыми.
+
+Режимы:
+- CHAT_REQUIRED — ответ обязан опираться на историю группы. Признаки: «кто у нас»,
+  «что Даня говорил», «кого в чате называют», «по нашей переписке», «с кем Илюха
+  тусил», вопросы про конкретные события, суммы, прозвища и участников группы.
+  Для него fallback_to_general = false.
+- CHAT_PREFERRED — вопрос может относиться к истории, но имеет и обычный смысл:
+  неоднозначные имена, прозвища, места, события. Примеры: «Что ты знаешь про
+  Хриплую и Питер?», «Кто такой Корнишон?», «Что было с BMW Бена?».
+  Для него fallback_to_general = true.
+- GENERAL — обычный вопрос из общих знаний. Примеры: «Что лучше BMW F30 или
+  Jetour T2?», «Кто такой Корнишон в биологии?», «Что посмотреть в Питере?»,
+  «Какая столица России?». Для него fallback_to_general = true.
+
+Если сомневаешься между CHAT_PREFERRED и GENERAL — выбирай CHAT_PREFERRED.
+Клички, странные имена и сленг, которых нет в общих знаниях, рядом с людьми или
+местами (например «Дрочер», «Корнишон», «Хриплая») — это про группу, ставь
+CHAT_PREFERRED, а не GENERAL. Вопросы вида «кто такой X», «на чём ездит X»,
+«что было с X» про участников группы — это история.
+chat_search_query — короткая формулировка для поиска по переписке (имена, места,
+темы из вопроса); для GENERAL можно повторить суть вопроса.
 """.strip()
+
 
 ANALYZER_SYSTEM = """
 Ты разбираешь фрагменты переписки закрытой пацанской группы и отвечаешь на вопрос
@@ -61,6 +77,9 @@ ANALYZER_SYSTEM = """
   «данных недостаточно».
 - Если связь косвенная — так и скажи (пример: «Похоже, Корнишоном называют Ваню:
   прозвище несколько раз использовали в ответах ему, но прямого объяснения нет»).
+- ЗАПРЕЩЕНО писать мета-фразы вроде «фрагментов переписки нет», «судя по стилю
+  общения» и любые догадки на пустом месте. Если данных для ответа нет — верни
+  status с confidence «недостаточно» и ПУСТОЙ answer, не сочиняй.
 
 Верни СТРОГО JSON без markdown:
 {
@@ -97,67 +116,62 @@ def _parse_json(text: str) -> dict[str, Any] | None:
 
 # --- планирование (GigaChat) -------------------------------------------------
 
-def _heuristic_plan(question: str) -> dict[str, Any]:
-    """Запасной план, если GigaChat недоступен или вернул мусор.
-    Не подменяет смысловой анализ — только грубо подбирает поисковые термины."""
+def _heuristic_classify(question: str) -> dict[str, Any]:
+    """Запасная классификация, если GigaChat недоступен. Не подменяет модель —
+    лишь грубо разводит режимы по маркерам, склоняясь к CHAT_PREFERRED при сомнении."""
     from . import aliases
 
+    n = history.normalize(question)
+    required_markers = (
+        "кто у нас", "у нас в чате", "по нашей переписке", "в нашем чате",
+        "в чате называют", "кого в чате", "с кем", "что говорил", "что сказал",
+    )
     person = aliases.resolve_query_person(question)
+    if any(m in n for m in required_markers) or (
+        person and any(w in n for w in ("говорил", "сказал", "премி", "премия", "тусил"))
+    ):
+        mode = "CHAT_REQUIRED"
+    elif person or history.looks_like_history_question(question):
+        mode = "CHAT_PREFERRED"
+    else:
+        mode = "GENERAL"
     return {
-        "is_history_question": history.looks_like_history_question(question),
-        "people": [person] if person else [],
-        "places": [],
-        "events": [],
-        "spellings": [],
-        "extra_queries": [],
-        "need_reply_chains": True,
-        "need_neighbors": True,
+        "mode": mode,
+        "chat_search_query": question,
+        "fallback_to_general": mode != "CHAT_REQUIRED",
     }
 
 
-async def plan_search(question: str, llm: LLM) -> dict[str, Any]:
+_VALID_MODES = {"CHAT_REQUIRED", "CHAT_PREFERRED", "GENERAL"}
+
+
+async def classify(question: str, llm: LLM) -> dict[str, Any]:
     try:
         raw = await llm.complete(
-            PLANNER_SYSTEM, f"Вопрос: {question}", temperature=0.0, max_tokens=400
+            CLASSIFIER_SYSTEM, f"Вопрос: {question}", temperature=0.0, max_tokens=200
         )
-        plan = _parse_json(raw)
+        data = _parse_json(raw)
     except Exception as exc:  # noqa: BLE001 — модель может отвалиться, деградируем мягко
-        logger.warning("Планировщик GigaChat недоступен (%s) — беру эвристику", exc)
-        plan = None
-    if not isinstance(plan, dict):
-        return _heuristic_plan(question)
-    plan.setdefault("is_history_question", history.looks_like_history_question(question))
-    for key in ("people", "places", "events", "spellings", "extra_queries"):
-        plan.setdefault(key, [])
-    plan.setdefault("need_reply_chains", True)
-    plan.setdefault("need_neighbors", True)
-    return plan
+        logger.warning("Классификатор GigaChat недоступен (%s) — беру эвристику", exc)
+        data = None
+    if not isinstance(data, dict) or data.get("mode") not in _VALID_MODES:
+        return _heuristic_classify(question)
+    data.setdefault("chat_search_query", question)
+    # согласуем fallback с режимом по правилам ТЗ
+    data["fallback_to_general"] = data.get("mode") != "CHAT_REQUIRED"
+    return data
 
 
 # --- локальная сборка эпизодов (без GigaChat) --------------------------------
 
-def _collect_terms(plan: dict[str, Any]) -> list[str]:
-    terms: list[str] = []
-    for key in ("people", "places", "events", "spellings", "extra_queries"):
-        terms += [str(t) for t in plan.get(key, []) if str(t).strip()]
-    # уникализируем, сохраняя порядок
-    seen: set[str] = set()
-    out = []
-    for t in terms:
-        low = t.lower()
-        if low not in seen:
-            seen.add(low)
-            out.append(t)
-    return out
-
-
 def _retrieve(
-    question: str,
-    plan: dict[str, Any],
+    query: str,
+    extra_terms: list[str] | None = None,
     *,
     max_seeds: int = 20,
+    neighbors: bool = True,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Чисто локально: собираем seed-позиции по вопросу и терминам плана,
+    """Чисто локально: собираем seed-позиции по строке поиска (и доп. терминам),
     затем эпизоды и подсказки памяти."""
     seeds: list[int] = []
     seen: set[int] = set()
@@ -168,19 +182,28 @@ def _retrieve(
                 seen.add(i)
                 seeds.append(i)
 
-    add(history.search_indices(question, limit=8))
-    for term in _collect_terms(plan):
-        add(history.search_indices(term, limit=5, min_score=0.5))
+    add(history.search_indices(query, limit=8, literal=True))   # слова-клички по всем
+    add(history.search_indices(query, limit=6))                  # версия с автор-фильтром
+    for term in extra_terms or []:
+        if str(term).strip():
+            add(history.search_indices(str(term), limit=5, min_score=0.3, literal=True))
     seeds = seeds[:max_seeds]
 
-    if plan.get("need_neighbors", True):
-        before = after = 7
-    else:
-        before = after = 2
-    episodes = retrieval.gather_episodes(seeds, before=before, after=after)
-
-    mem_query = " ".join([question] + _collect_terms(plan))
+    mem_query = " ".join([query] + [str(t) for t in (extra_terms or [])])
     mem_hits = memory.search_memory(mem_query)
+
+    # память помогает найти эпизод: подтягиваем исходные сообщения по evidence
+    index = history.get_index()
+    if index is not None:
+        for hit in mem_hits:
+            for mid in hit.get("evidence", []) or []:
+                idx = index.id_to_idx.get(mid)
+                if idx is not None and idx not in seen:
+                    seen.add(idx)
+                    seeds.append(idx)
+
+    before = after = 7 if neighbors else 2
+    episodes = retrieval.gather_episodes(seeds, before=before, after=after)
     return episodes, mem_hits
 
 
@@ -219,24 +242,22 @@ async def analyze_once(
     return _parse_json(raw)
 
 
-async def answer_history(
+def _insufficient(confidence: str) -> bool:
+    return "недостаточ" in (confidence or "").lower()
+
+
+async def _run_history(
     question: str,
+    query: str,
     llm: LLM,
     *,
     max_passes: int = 2,
-) -> str | None:
-    """Возвращает финальный ответ по истории или None, если вопрос не про историю.
-    None означает: обрабатывай вопрос обычным путём (общие знания GigaChat)."""
-    if not history.history_available():
-        if history.looks_like_history_question(question):
-            return "Не могу сейчас поднять переписку — история недоступна."
-        return None
-
-    plan = await plan_search(question, llm)
-    if not plan.get("is_history_question", False):
-        return None
-
-    episodes, mem_hits = _retrieve(question, plan)
+) -> dict[str, Any]:
+    """Прогоняет историю через двухпроходный анализ.
+    Возвращает {answer, confidence, found}: found=False — убедительных данных нет."""
+    episodes, mem_hits = _retrieve(query)
+    if not episodes and not mem_hits:
+        return {"answer": "", "confidence": "недостаточно", "found": False}
 
     last: dict[str, Any] | None = None
     for pass_no in range(1, max_passes + 1):
@@ -247,29 +268,80 @@ async def answer_history(
 
         status = result.get("status", "answer")
         if status == "answer" or pass_no == max_passes:
-            answer = (result.get("answer") or "").strip()
-            if answer:
-                return answer
             break
 
-        # status == need_more: второй проход по follow-up
         followup = result.get("followup") or {}
-        fu_plan = {
-            "people": followup.get("people", []),
-            "places": followup.get("places", []),
-            "events": [],
-            "spellings": [],
-            "extra_queries": followup.get("queries", []),
-            "need_neighbors": True,
-            "need_reply_chains": True,
-        }
-        logger.info("История: второй поиск pass=%s followup=%s", pass_no + 1, fu_plan)
-        more_eps, more_mem = _retrieve(question, fu_plan)
+        terms = (
+            list(followup.get("queries", []))
+            + list(followup.get("people", []))
+            + list(followup.get("places", []))
+        )
+        logger.info("История: второй поиск pass=%s terms=%s", pass_no + 1, terms)
+        more_eps, more_mem = _retrieve(query, terms)
         episodes = _merge_episodes(episodes, more_eps)
-        # мемори-подсказки объединяем по описанию
         seen_desc = {m.get("description") for m in mem_hits}
         mem_hits += [m for m in more_mem if m.get("description") not in seen_desc]
 
-    if isinstance(last, dict) and (last.get("answer") or "").strip():
-        return last["answer"].strip()
-    return "В переписке этого не нашёл."
+    if isinstance(last, dict):
+        answer = (last.get("answer") or "").strip()
+        confidence = str(last.get("confidence") or "")
+        return {"answer": answer, "confidence": confidence, "found": bool(answer)}
+    return {"answer": "", "confidence": "недостаточно", "found": False}
+
+
+NOT_FOUND = "В переписке этого не нашёл."
+
+
+async def route_answer(
+    question: str,
+    llm: LLM,
+    *,
+    max_passes: int = 2,
+) -> str | None:
+    """Трёхрежимная маршрутизация.
+
+    Возвращает:
+      • строку — готовый ответ по истории группы (отправить пользователю);
+      • None   — вопрос надо обработать обычным путём (общие знания GigaChat).
+
+    Режимы:
+      GENERAL        -> сразу None (обычный ответ, без блокировки историей).
+      CHAT_REQUIRED  -> только история; нет данных -> «В переписке этого не нашёл».
+      CHAT_PREFERRED -> сначала история; нет убедительных данных -> None (фолбэк).
+    """
+    cls = await classify(question, llm)
+    mode = cls.get("mode", "GENERAL")
+    query = cls.get("chat_search_query") or question
+
+    # Подстраховка от слабого классификатора (Lite): если в вопросе есть известный
+    # участник группы или явные маркеры истории, не отдаём его в GENERAL —
+    # минимум проверяем переписку (CHAT_PREFERRED, с фолбэком в обычный ответ).
+    from . import aliases
+    if mode == "GENERAL" and (
+        aliases.resolve_query_person(question) is not None
+        or history.looks_like_history_question(question)
+    ):
+        mode = "CHAT_PREFERRED"
+        logger.info("Router override: GENERAL -> CHAT_PREFERRED (известный алиас/маркер)")
+
+    logger.info("Router mode=%s query=%r", mode, query[:120])
+
+    if mode == "GENERAL":
+        return None
+
+    if not history.history_available():
+        return NOT_FOUND if mode == "CHAT_REQUIRED" else None
+
+    result = await _run_history(question, query, llm, max_passes=max_passes)
+    good = result["found"] and not _insufficient(result["confidence"])
+
+    if mode == "CHAT_REQUIRED":
+        # неуверенный/пустой ответ в REQUIRED = «не нашёл», без фантазий модели
+        return result["answer"] if good else NOT_FOUND
+
+    # CHAT_PREFERRED: нет убедительных данных -> обычный вопрос (не «не нашёл»)
+    return result["answer"] if good else None
+
+
+# обратная совместимость со старым именем
+answer_history = route_answer

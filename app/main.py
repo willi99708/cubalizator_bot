@@ -130,22 +130,20 @@ async def telegram_webhook(
 
         question = extract_question(message, settings.bot_username)
 
-        # Вопросы про историю группы идут через оркестратор:
-        # GigaChat планирует поиск -> локально собираем эпизоды -> GigaChat отвечает.
-        # Дешёвый локальный пре-фильтр отсекает явно не-исторические вопросы,
-        # чтобы не гонять планировщик на «что лучше BMW или Jetour».
-        if history.looks_like_history_question(question):
-            await telegram.send_chat_action(chat_id)
-            history_answer = await analysis.answer_history(question, gigachat)
-            if history_answer:
-                await telegram.send_reply(
-                    chat_id, message_id, truncate_answer(history_answer, settings.max_answer_chars)
-                )
-                return JSONResponse({"ok": True})
+        # Трёхрежимная маршрутизация: классификатор GigaChat решает, нужна ли
+        # история (CHAT_REQUIRED / CHAT_PREFERRED) или это обычный вопрос (GENERAL).
+        # route_answer вернёт готовый ответ по истории либо None — тогда отвечаем
+        # обычным образом (общие знания GigaChat).
+        await telegram.send_chat_action(chat_id)
+        history_answer = await analysis.route_answer(question, gigachat)
+        if history_answer:
+            await telegram.send_reply(
+                chat_id, message_id, truncate_answer(history_answer, settings.max_answer_chars)
+            )
+            return JSONResponse({"ok": True})
 
         model_input = build_model_input(message, settings.bot_username)
 
-        await telegram.send_chat_action(chat_id)
         answer = await gigachat.ask(model_input)
         answer = truncate_answer(answer, settings.max_answer_chars)
         await telegram.send_reply(chat_id, message_id, answer)
