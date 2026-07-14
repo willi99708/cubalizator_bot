@@ -70,7 +70,7 @@ jobs:
           CONTAINER_ID: ${{ steps.deploy_container.outputs.id }}
         run: |
           set -euo pipefail
-          for attempt in 1 2 3 4 5; do
+          for attempt in $(seq 1 10); do
             if curl --fail-with-body --silent --show-error \
               --max-time 30 \
               "https://${CONTAINER_ID}.containers.yandexcloud.net/health"; then
@@ -110,41 +110,107 @@ jobs:
 
           cat apigw.generated.yaml
 
-      - name: Set Telegram webhook to API Gateway
+      - name: Deploy API Gateway
+        id: deploy_gateway
+        uses: yc-actions/yc-api-gateway-deploy@v2
+        with:
+          yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+          gateway-name: cubalizator-gateway
+          folder-id: ${{ secrets.YC_FOLDER_ID }}
+          spec-file: apigw.generated.yaml
+
+      - name: Wait for API Gateway
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          GATEWAY_DOMAIN: ${{ steps.deploy_gateway.outputs.domain }}
+          GATEWAY_DOMAIN_RAW: ${{ steps.deploy_gateway.outputs.domain }}
         run: |
           set -euo pipefail
 
-          curl --fail --silent --show-error \
+          DOMAIN="${GATEWAY_DOMAIN_RAW#https://}"
+          DOMAIN="${DOMAIN#http://}"
+          DOMAIN="${DOMAIN%/}"
+
+          if [ -z "$DOMAIN" ]; then
+            echo "API Gateway action returned an empty domain."
+            exit 1
+          fi
+
+          echo "API Gateway domain: $DOMAIN"
+
+          for attempt in $(seq 1 24); do
+            if curl --silent --show-error \
+              --output /dev/null \
+              --max-time 10 \
+              "https://${DOMAIN}/"; then
+              echo "API Gateway HTTPS is ready."
+              exit 0
+            fi
+
+            echo "Gateway is not ready yet: attempt ${attempt}/24"
+            sleep 10
+          done
+
+          echo "API Gateway did not become reachable."
+          exit 1
+
+      - name: Reset and set Telegram webhook
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          GATEWAY_DOMAIN_RAW: ${{ steps.deploy_gateway.outputs.domain }}
+        run: |
+          set -euo pipefail
+
+          DOMAIN="${GATEWAY_DOMAIN_RAW#https://}"
+          DOMAIN="${DOMAIN#http://}"
+          DOMAIN="${DOMAIN%/}"
+
+          WEBHOOK_URL="https://${DOMAIN}/telegram/webhook/cubalizator-hook-v1"
+          echo "Webhook URL: ${WEBHOOK_URL}"
+
+          DELETE_RESPONSE="$(curl --silent --show-error \
             --request POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook" \
-            --data-urlencode "drop_pending_updates=true"
-
-          RESPONSE="$(curl --fail --silent --show-error \
-            --request POST \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-            --data-urlencode "url=https://${GATEWAY_DOMAIN}/telegram/webhook/cubalizator-hook-v1" \
-            --data-urlencode 'allowed_updates=["message","edited_message"]' \
             --data-urlencode "drop_pending_updates=true")"
 
-          echo "$RESPONSE" | jq
-          test "$(echo "$RESPONSE" | jq -r '.ok')" = "true"
+          echo "$DELETE_RESPONSE" | jq
+          test "$(echo "$DELETE_RESPONSE" | jq -r '.ok')" = "true"
+
+          for attempt in $(seq 1 12); do
+            RESPONSE="$(curl --silent --show-error \
+              --request POST \
+              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+              --data-urlencode "url=${WEBHOOK_URL}" \
+              --data-urlencode 'allowed_updates=["message","edited_message"]' \
+              --data-urlencode "drop_pending_updates=true")"
+
+            echo "$RESPONSE" | jq
+
+            if [ "$(echo "$RESPONSE" | jq -r '.ok')" = "true" ]; then
+              exit 0
+            fi
+
+            echo "Telegram rejected the webhook: attempt ${attempt}/12"
+            sleep 10
+          done
+
+          exit 1
 
       - name: Verify Telegram webhook
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          GATEWAY_DOMAIN: ${{ steps.deploy_gateway.outputs.domain }}
+          GATEWAY_DOMAIN_RAW: ${{ steps.deploy_gateway.outputs.domain }}
         run: |
           set -euo pipefail
 
-          RESPONSE="$(curl --fail --silent --show-error \
+          DOMAIN="${GATEWAY_DOMAIN_RAW#https://}"
+          DOMAIN="${DOMAIN#http://}"
+          DOMAIN="${DOMAIN%/}"
+
+          EXPECTED="https://${DOMAIN}/telegram/webhook/cubalizator-hook-v1"
+
+          RESPONSE="$(curl --silent --show-error \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo")"
 
           echo "$RESPONSE" | jq
 
-          EXPECTED="https://${GATEWAY_DOMAIN}/telegram/webhook/cubalizator-hook-v1"
           ACTUAL="$(echo "$RESPONSE" | jq -r '.result.url')"
-
           test "$ACTUAL" = "$EXPECTED"
