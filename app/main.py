@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
@@ -21,31 +20,50 @@ logger = logging.getLogger("cubalizator")
 settings = Settings.from_env()
 telegram = TelegramClient(settings.telegram_bot_token)
 gigachat = GigaChatClient(settings)
-bot_id: int | None = None
 
+# Telegram Bot API token начинается с числового ID бота.
+# Поэтому не делаем внешний getMe-запрос при старте контейнера.
+try:
+    bot_id: int | None = int(settings.telegram_bot_token.split(":", 1)[0])
+except (ValueError, IndexError):
+    bot_id = None
 
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    global bot_id
-    me = await telegram.get_me()
-    bot_id = int(me["id"])
-    actual_username = str(me.get("username") or "")
-    logger.info(
-        "Bot initialized username=%s id=%s allowed_chat_id=%s model=%s",
-        actual_username,
-        bot_id,
-        settings.allowed_chat_id,
-        settings.gigachat_model,
-    )
-    yield
+app = FastAPI(title="CubaLizator Bot")
 
-
-app = FastAPI(title="CubaLizator Bot", lifespan=lifespan)
+logger.info(
+    "Application loaded username=%s bot_id=%s allowed_chat_id=%s model=%s",
+    settings.bot_username,
+    bot_id,
+    settings.allowed_chat_id,
+    settings.gigachat_model,
+)
 
 
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+def extract_message(update: dict[str, Any]) -> dict[str, Any] | None:
+    for key in (
+        "message",
+        "edited_message",
+        "channel_post",
+        "edited_channel_post",
+        "business_message",
+        "edited_business_message",
+    ):
+        value = update.get(key)
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def is_chatid_command(text: str) -> bool:
+    if not text:
+        return False
+    first_token = text.strip().split(maxsplit=1)[0]
+    return first_token.split("@", 1)[0].lower() == "/chatid"
 
 
 @app.post("/telegram/webhook/{path_secret}")
@@ -59,8 +77,16 @@ async def telegram_webhook(
     if x_telegram_bot_api_secret_token != settings.telegram_webhook_secret:
         raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
-    update = await request.json()
-    message: dict[str, Any] | None = update.get("message")
+    update: dict[str, Any] = await request.json()
+    message = extract_message(update)
+
+    logger.info(
+        "Telegram update id=%s keys=%s has_message=%s",
+        update.get("update_id"),
+        list(update.keys()),
+        message is not None,
+    )
+
     if not message:
         return JSONResponse({"ok": True})
 
@@ -75,38 +101,53 @@ async def telegram_webhook(
         return JSONResponse({"ok": True})
 
     text = message_text(message)
-
-    # Временная команда, чтобы узнать ID группы до фиксации ALLOWED_CHAT_ID.
-    if text.lower().startswith("/chatid"):
-        await telegram.send_reply(chat_id, message_id, f"ID чата: {chat_id}")
-        return JSONResponse({"ok": True})
-
-    if settings.allowed_chat_id is not None and chat_id != settings.allowed_chat_id:
-        return JSONResponse({"ok": True})
-
-    if not should_answer(
-        message,
-        bot_username=settings.bot_username,
-        bot_id=bot_id,
-        allow_reply_to_bot=settings.allow_reply_to_bot,
-    ):
-        return JSONResponse({"ok": True})
-
-    model_input = build_model_input(message, settings.bot_username)
+    logger.info("Message chat_id=%s message_id=%s text=%r", chat_id, message_id, text[:300])
 
     try:
+        # Команда доступна в любом чате для диагностики ID.
+        if is_chatid_command(text):
+            await telegram.send_reply(chat_id, message_id, f"ID чата: {chat_id}")
+            return JSONResponse({"ok": True})
+
+        if settings.allowed_chat_id is not None and chat_id != settings.allowed_chat_id:
+            logger.info(
+                "Ignored non-allowed chat chat_id=%s allowed_chat_id=%s",
+                chat_id,
+                settings.allowed_chat_id,
+            )
+            return JSONResponse({"ok": True})
+
+        if not should_answer(
+            message,
+            bot_username=settings.bot_username,
+            bot_id=bot_id,
+            allow_reply_to_bot=settings.allow_reply_to_bot,
+        ):
+            logger.info("Ignored message without mention/reply")
+            return JSONResponse({"ok": True})
+
+        model_input = build_model_input(message, settings.bot_username)
+
         await telegram.send_chat_action(chat_id)
         answer = await gigachat.ask(model_input)
         answer = truncate_answer(answer, settings.max_answer_chars)
         await telegram.send_reply(chat_id, message_id, answer)
+
     except httpx.TimeoutException:
-        logger.exception("GigaChat timeout")
+        logger.exception("External API timeout")
         await telegram.send_reply(chat_id, message_id, "Завис. Повтори чуть позже.")
     except httpx.HTTPStatusError as exc:
-        logger.exception("External API error status=%s", exc.response.status_code)
+        logger.exception(
+            "External API error status=%s body=%s",
+            exc.response.status_code,
+            exc.response.text[:500],
+        )
         await telegram.send_reply(chat_id, message_id, "API прилегло. Попробуй позже.")
     except Exception:
         logger.exception("Unexpected update processing error")
-        await telegram.send_reply(chat_id, message_id, "Технически отъехал. Повтори позже.")
+        try:
+            await telegram.send_reply(chat_id, message_id, "Технически отъехал. Повтори позже.")
+        except Exception:
+            logger.exception("Could not send fallback response")
 
     return JSONResponse({"ok": True})
