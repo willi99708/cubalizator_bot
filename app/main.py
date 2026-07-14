@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .clients import GigaChatClient, TelegramClient
@@ -21,8 +21,6 @@ settings = Settings.from_env()
 telegram = TelegramClient(settings.telegram_bot_token)
 gigachat = GigaChatClient(settings)
 
-# Telegram Bot API token начинается с числового ID бота.
-# Поэтому не делаем внешний getMe-запрос при старте контейнера.
 try:
     bot_id: int | None = int(settings.telegram_bot_token.split(":", 1)[0])
 except (ValueError, IndexError):
@@ -70,12 +68,9 @@ def is_chatid_command(text: str) -> bool:
 async def telegram_webhook(
     path_secret: str,
     request: Request,
-    x_telegram_bot_api_secret_token: str | None = Header(default=None),
 ) -> JSONResponse:
     if path_secret != settings.webhook_path_secret:
         raise HTTPException(status_code=404, detail="Not found")
-    if x_telegram_bot_api_secret_token != settings.telegram_webhook_secret:
-        raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
     update: dict[str, Any] = await request.json()
     message = extract_message(update)
@@ -101,10 +96,14 @@ async def telegram_webhook(
         return JSONResponse({"ok": True})
 
     text = message_text(message)
-    logger.info("Message chat_id=%s message_id=%s text=%r", chat_id, message_id, text[:300])
+    logger.info(
+        "Message chat_id=%s message_id=%s text=%r",
+        chat_id,
+        message_id,
+        text[:300],
+    )
 
     try:
-        # Команда доступна в любом чате для диагностики ID.
         if is_chatid_command(text):
             await telegram.send_reply(chat_id, message_id, f"ID чата: {chat_id}")
             return JSONResponse({"ok": True})
@@ -146,7 +145,11 @@ async def telegram_webhook(
     except Exception:
         logger.exception("Unexpected update processing error")
         try:
-            await telegram.send_reply(chat_id, message_id, "Технически отъехал. Повтори позже.")
+            await telegram.send_reply(
+                chat_id,
+                message_id,
+                "Технически отъехал. Повтори позже.",
+            )
         except Exception:
             logger.exception("Could not send fallback response")
 
