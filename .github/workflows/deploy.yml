@@ -58,9 +58,10 @@ jobs:
             ALLOW_REPLY_TO_BOT=false
             GIGACHAT_AUTH_KEY=${{ secrets.GIGACHAT_AUTH_KEY }}
             GIGACHAT_SCOPE=GIGACHAT_API_PERS
-            GIGACHAT_MODEL=GigaChat-2-Max
+            GIGACHAT_MODEL=GigaChat-2-Lite
+            GIGACHAT_CHAT_URL=https://api.giga.chat/v1/chat/completions
             GIGACHAT_VERIFY_SSL=false
-            GIGACHAT_TIMEOUT_SECONDS=60
+            GIGACHAT_TIMEOUT_SECONDS=20
             MAX_ANSWER_CHARS=700
 
       - name: Set Telegram webhook
