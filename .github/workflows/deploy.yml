@@ -52,7 +52,7 @@ jobs:
           revision-env: |
             TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
             BOT_USERNAME=cubalizator_bot
-            TELEGRAM_WEBHOOK_SECRET=${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+            TELEGRAM_WEBHOOK_SECRET=disabled
             WEBHOOK_PATH_SECRET=cubalizator-hook-v1
             ALLOWED_CHAT_ID=${{ secrets.ALLOWED_CHAT_ID }}
             ALLOW_REPLY_TO_BOT=false
@@ -80,23 +80,41 @@ jobs:
           done
           exit 1
 
-      - name: Set Telegram webhook
+      - name: Reset and set Telegram webhook
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
           CONTAINER_ID: ${{ steps.deploy.outputs.id }}
         run: |
+          set -euo pipefail
+
           curl --fail --silent --show-error \
+            --request POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook" \
+            --data-urlencode "drop_pending_updates=true"
+
+          RESPONSE="$(curl --fail --silent --show-error \
             --request POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
             --data-urlencode "url=https://${CONTAINER_ID}.containers.yandexcloud.net/telegram/webhook/cubalizator-hook-v1" \
-            --data-urlencode "secret_token=${TELEGRAM_WEBHOOK_SECRET}" \
             --data-urlencode 'allowed_updates=["message","edited_message"]' \
-            --data-urlencode "drop_pending_updates=true"
+            --data-urlencode "drop_pending_updates=true")"
 
-      - name: Check Telegram webhook
+          echo "$RESPONSE" | jq
+          test "$(echo "$RESPONSE" | jq -r '.ok')" = "true"
+
+      - name: Verify Telegram webhook
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CONTAINER_ID: ${{ steps.deploy.outputs.id }}
         run: |
-          curl --silent --show-error \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo" | jq
+          set -euo pipefail
+
+          RESPONSE="$(curl --fail --silent --show-error \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo")"
+
+          echo "$RESPONSE" | jq
+
+          EXPECTED="https://${CONTAINER_ID}.containers.yandexcloud.net/telegram/webhook/cubalizator-hook-v1"
+          ACTUAL="$(echo "$RESPONSE" | jq -r '.result.url')"
+
+          test "$ACTUAL" = "$EXPECTED"
