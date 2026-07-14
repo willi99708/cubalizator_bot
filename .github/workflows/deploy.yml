@@ -1,0 +1,78 @@
+name: deploy
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pytest -q
+
+      - name: Login to Yandex Container Registry
+        uses: yc-actions/yc-cr-login@v1
+        with:
+          yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+
+      - name: Build and push Docker image
+        env:
+          IMAGE: cr.yandex/crpe8ibsbb94euufdl94/cubalizator:${{ github.sha }}
+        run: |
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Deploy Yandex Serverless Container
+        id: deploy
+        uses: yc-actions/yc-sls-container-deploy@v4
+        with:
+          yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+          folder-id: ${{ secrets.YC_FOLDER_ID }}
+          container-name: cubalizator
+          public: true
+          revision-service-account-id: ${{ secrets.YC_SERVICE_ACCOUNT_ID }}
+          revision-image-url: cr.yandex/crpe8ibsbb94euufdl94/cubalizator:${{ github.sha }}
+          revision-cores: 1
+          revision-memory: 512Mb
+          revision-core-fraction: 100
+          revision-concurrency: 4
+          revision-execution-timeout: 70
+          revision-env: |
+            TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+            BOT_USERNAME=cubalizator_bot
+            TELEGRAM_WEBHOOK_SECRET=${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+            WEBHOOK_PATH_SECRET=${{ secrets.WEBHOOK_PATH_SECRET }}
+            ALLOWED_CHAT_ID=${{ secrets.ALLOWED_CHAT_ID }}
+            ALLOW_REPLY_TO_BOT=false
+            GIGACHAT_AUTH_KEY=${{ secrets.GIGACHAT_AUTH_KEY }}
+            GIGACHAT_SCOPE=GIGACHAT_API_PERS
+            GIGACHAT_MODEL=GigaChat-2-Max
+            GIGACHAT_VERIFY_SSL=false
+            GIGACHAT_TIMEOUT_SECONDS=60
+            MAX_ANSWER_CHARS=700
+
+      - name: Set Telegram webhook
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          WEBHOOK_PATH_SECRET: ${{ secrets.WEBHOOK_PATH_SECRET }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          CONTAINER_ID: ${{ steps.deploy.outputs.id }}
+        run: |
+          curl --fail --silent --show-error \
+            --request POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+            --data-urlencode "url=https://${CONTAINER_ID}.containers.yandexcloud.net/telegram/webhook/${WEBHOOK_PATH_SECRET}" \
+            --data-urlencode "secret_token=${TELEGRAM_WEBHOOK_SECRET}" \
+            --data-urlencode "drop_pending_updates=true"
