@@ -1,0 +1,78 @@
+name: telegram-inbound-test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Show bot identity
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl --silent --show-error \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" | \
+            jq '{ok, id:.result.id, username:.result.username, can_join_groups:.result.can_join_groups, can_read_all_group_messages:.result.can_read_all_group_messages}'
+
+      - name: Temporarily disable webhook
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl --silent --show-error \
+            --request POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook" \
+            --data-urlencode "drop_pending_updates=true" | jq
+
+      - name: Wait for a real incoming Telegram message
+        id: poll
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "SEND /probe TO @cubalizator_bot NOW. Polling for up to 80 seconds."
+          FOUND=0
+          for attempt in 1 2 3 4; do
+            RESPONSE="$(curl --silent --show-error --max-time 25 \
+              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?timeout=20&allowed_updates=%5B%22message%22%2C%22edited_message%22%5D")"
+            echo "$RESPONSE" | jq
+            COUNT="$(echo "$RESPONSE" | jq '.result | length')"
+            if [ "$COUNT" -gt 0 ]; then
+              FOUND=1
+              break
+            fi
+          done
+          if [ "$FOUND" -ne 1 ]; then
+            echo "NO_REAL_TELEGRAM_UPDATE_RECEIVED"
+            exit 1
+          fi
+
+      - name: Restore webhook
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          curl --silent --show-error \
+            --request POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+            --data-urlencode "url=https://bba1vtooqk4h55qfm86p.containers.yandexcloud.net/telegram/webhook/cubalizator-hook-v1" \
+            --data-urlencode "secret_token=${TELEGRAM_WEBHOOK_SECRET}" \
+            --data-urlencode 'allowed_updates=["message","edited_message"]' \
+            --data-urlencode "drop_pending_updates=false" | jq
+
+      - name: Show restored webhook
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          curl --silent --show-error \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo" | jq
